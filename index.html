@@ -40,6 +40,12 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    transition: box-shadow 0.3s;
+  }
+  
+  .battle-arena.boss-mode {
+    box-shadow: inset 0 0 40px rgba(220, 38, 38, 0.3);
+    border: 1px solid #ef4444;
   }
   
   .stage-header {
@@ -147,6 +153,7 @@
   }
   .hp-player { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
   .hp-enemy { background: linear-gradient(90deg, #ef4444, #f87171); }
+  .hp-boss { background: linear-gradient(90deg, #b91c1c, #f87171); }
   
   .hp-text {
     font-size: 0.65rem;
@@ -265,6 +272,9 @@
   .lvl4 { background:#f472b6; color:#f472b6; }
   .lvl5 { background:#a78bfa; color:#a78bfa; }
   .lvl6 { background:#fb923c; color:#fb923c; }
+  .lvl7 { background:#6366f1; color:#6366f1; }
+  .lvl8 { background:#ec4899; color:#ec4899; }
+  .lvl9 { background:#dc2626; color:#dc2626; box-shadow: 0 0 15px #ef4444; border: 2px solid #fff; }
 
   .lvl-badge {
     position:absolute;
@@ -332,6 +342,19 @@
     20% { transform: translate(-50%, -20px) scale(1.3); opacity: 1; }
     100% { transform: translate(-50%, -60px) scale(1); opacity: 0; }
   }
+  
+  /* Boss Flash Animation */
+  @keyframes bossWarning {
+    0% { background: rgba(220, 38, 38, 0); }
+    50% { background: rgba(220, 38, 38, 0.4); }
+    100% { background: rgba(220, 38, 38, 0); }
+  }
+  .boss-flash {
+    position: fixed; top:0; left:0; right:0; bottom:0;
+    pointer-events: none;
+    z-index: 999;
+    animation: bossWarning 0.5s ease-in-out 3;
+  }
 </style>
 </head>
 <body>
@@ -339,9 +362,9 @@
 <div class="shell">
   
   <!-- BATTLE AREA -->
-  <div class="battle-arena">
+  <div class="battle-arena" id="arena">
     <div class="stage-header">
-      <div>Stage <span id="stageNum">1</span> - Wave <span id="waveNum">1</span>/5</div>
+      <div id="stageInfo">Stage <span id="stageNum">1</span> - Wave <span id="waveNum">1</span>/5</div>
       <button class="btn-auto" id="btnAuto" onclick="toggleAuto()">AUTO: OFF</button>
     </div>
     
@@ -353,7 +376,7 @@
         <div class="hp-text"><span id="hpCurPlayer">100</span>/<span id="hpMaxPlayer">100</span> HP</div>
       </div>
 
-      <div class="vs-badge">VS</div>
+      <div class="vs-badge" id="vsBadge">VS</div>
 
       <!-- Enemy -->
       <div class="fighter">
@@ -468,7 +491,12 @@ const AudioSys = {
     setTimeout(()=>AudioSys.play(100, 'sawtooth', 0.4, 0.2), 300);
   },
   error: () => AudioSys.play(100, 'sawtooth', 0.3, 0.1),
-  click: () => AudioSys.play(400, 'sine', 0.05, 0.1)
+  click: () => AudioSys.play(400, 'sine', 0.05, 0.1),
+  bossTrigger: () => {
+    AudioSys.play(100, 'sawtooth', 0.5, 0.3);
+    setTimeout(()=>AudioSys.play(80, 'sawtooth', 0.5, 0.3), 400);
+    setTimeout(()=>AudioSys.play(60, 'sawtooth', 1.0, 0.3), 800);
+  }
 };
 
 // ===== GAME CONFIG =====
@@ -483,7 +511,6 @@ const CONFIG = {
 };
 
 // ORB STATS [Level]: { dps, hp }
-// Note: "dps" here acts as "Damage Per Hit" since attack speed is 1.0s
 const UNIT_STATS = {
   1: { dps: 10,   hp: 50 },
   2: { dps: 25,   hp: 125 },
@@ -492,7 +519,8 @@ const UNIT_STATS = {
   5: { dps: 600,  hp: 2500 },
   6: { dps: 2000, hp: 7000 },
   7: { dps: 8000, hp: 20000 },
-  8: { dps: 50000,hp: 100000 }
+  8: { dps: 50000,hp: 100000 },
+  9: { dps: 250000, hp: 600000 } // God Unit
 };
 
 const ENEMIES = ["👾", "👹", "💀", "👻", "👽", "🤖", "🦇", "🐲"];
@@ -507,6 +535,8 @@ let state = {
   inBattle: false,
   stage: 1,
   wave: 1,
+  
+  isSecretBoss: false,
   
   // Timers for discrete attacks
   playerAttackTimer: 0,
@@ -531,8 +561,12 @@ const dom = {
   hp: document.getElementById('hpDisplay'),
   grid: document.getElementById('grid'),
   
+  stageInfo: document.getElementById('stageInfo'),
   stage: document.getElementById('stageNum'),
   wave: document.getElementById('waveNum'),
+  
+  arena: document.getElementById('arena'),
+  vsBadge: document.getElementById('vsBadge'),
   
   enemyVis: document.getElementById('enemyVisual'),
   playerVis: document.getElementById('playerVisual'),
@@ -570,6 +604,8 @@ function init(){
 }
 
 function setupWaveStats() {
+  if (state.isSecretBoss) return; // Don't reset if boss active
+
   // Enemy Scaling
   const baseHp = 50;
   const baseDps = 5;
@@ -588,8 +624,57 @@ function setupWaveStats() {
   
   const enemyIcon = ENEMIES[(state.stage - 1) % ENEMIES.length];
   dom.enemyVis.textContent = enemyIcon;
-  dom.enemyVis.classList.remove('hit-flash', 'dead');
-  dom.playerVis.classList.remove('hit-flash', 'dead');
+  
+  // Clean UI
+  dom.arena.classList.remove('boss-mode');
+  dom.hpBarE.classList.remove('hp-boss');
+  dom.hpBarE.classList.add('hp-enemy');
+  dom.stageInfo.innerHTML = `Stage <span id="stageNum">${state.stage}</span> - Wave <span id="waveNum">${state.wave}</span>/5`;
+  
+  updateBattleUI();
+}
+
+function triggerSecretBoss() {
+  state.inBattle = false; // Pause any current battle logic
+  state.isSecretBoss = true;
+  state.autoActive = false; // Turn off auto for this event
+  
+  // Flash effect
+  const flash = document.createElement('div');
+  flash.className = 'boss-flash';
+  document.body.appendChild(flash);
+  setTimeout(()=>flash.remove(), 1500);
+  
+  AudioSys.init();
+  AudioSys.bossTrigger();
+  
+  // BOSS STATS (Designed to be beatable by Lv9 but scary)
+  // Lv9 Unit: 250k DMG / 600k HP
+  // Boss needs to die in ~20 hits (20s) -> 5,000,000 HP
+  // Boss needs to deal significant damage -> 20,000 DMG (30 hits to kill player)
+  // Player wins with ~10s margin.
+  
+  state.enemyMaxHP = 5000000;
+  state.enemyCurHP = state.enemyMaxHP;
+  state.enemyDPS = 20000;
+  
+  // Heal Player for the fight
+  recalcPlayerStats();
+  state.playerCurHP = state.playerMaxHP;
+  
+  // Visuals
+  dom.enemyVis.textContent = "☠️";
+  dom.arena.classList.add('boss-mode');
+  dom.hpBarE.classList.remove('hp-enemy');
+  dom.hpBarE.classList.add('hp-boss');
+  dom.stageInfo.textContent = "⚠️ SECRET BOSS CHALLENGE ⚠️";
+  
+  dom.overlay.style.display = 'none';
+  
+  // Start fight immediately
+  state.inBattle = true;
+  state.playerAttackTimer = 0.5;
+  state.enemyAttackTimer = 0;
   
   updateBattleUI();
 }
@@ -598,7 +683,6 @@ function startWave() {
   recalcPlayerStats(); 
   state.playerCurHP = state.playerMaxHP;
   
-  // Random offset so they don't hit exactly same millisecond usually
   state.playerAttackTimer = 0.5; 
   state.enemyAttackTimer = 0;
   
@@ -631,10 +715,8 @@ function triggerPlayerAttack() {
     if(stats.dps <= 0) return;
     
     // VISUALS
-    // 1. Recoil on random orbs
     const orbs = document.querySelectorAll('.orb');
     if(orbs.length > 0) {
-        // Pick random 3 orbs to animate
         for(let i=0; i<3; i++) {
             const rand = orbs[Math.floor(Math.random()*orbs.length)];
             rand.classList.remove('attacking');
@@ -643,7 +725,6 @@ function triggerPlayerAttack() {
         }
     }
     
-    // 2. Lunge Player
     dom.playerVis.classList.remove('attack-lunge-right');
     void dom.playerVis.offsetWidth;
     dom.playerVis.classList.add('attack-lunge-right');
@@ -660,23 +741,19 @@ function damageEnemy(amount, isClick) {
     winWave();
   }
   
-  // Visual Hit
   dom.enemyVis.classList.remove('hit-flash');
   void dom.enemyVis.offsetWidth;
   dom.enemyVis.classList.add('hit-flash');
   
   if(!isClick) AudioSys.hitEnemy();
   
-  // Damage Number
   spawnDmgNumber(dom.enemyVis, `-${Math.floor(amount)}`, '#fff');
-  
   updateBattleUI();
 }
 
 function triggerEnemyAttack() {
     if(state.enemyDPS <= 0) return;
 
-    // Visual Lunge
     dom.enemyVis.classList.remove('attack-lunge-left');
     void dom.enemyVis.offsetWidth;
     dom.enemyVis.classList.add('attack-lunge-left');
@@ -693,16 +770,13 @@ function damagePlayer(amount) {
     loseWave();
   }
   
-  // Visual Hit
   dom.playerVis.classList.remove('hit-flash');
   void dom.playerVis.offsetWidth;
   dom.playerVis.classList.add('hit-flash');
   
   AudioSys.hitPlayer();
   
-  // Damage Number on Player
   spawnDmgNumber(dom.playerVis, `-${Math.floor(amount)}`, '#f87171');
-  
   updateBattleUI();
 }
 
@@ -712,14 +786,29 @@ function winWave() {
   dom.enemyVis.classList.add('dead');
   
   // Rewards
-  const baseReward = 15;
-  const power = ((state.stage - 1) * 5) + (state.wave - 1);
-  const reward = Math.floor(baseReward * Math.pow(1.25, power));
-  
-  addCoins(reward);
-  spawnDmgNumber(dom.enemyVis, `+${reward} 🪙`, '#4ade80');
+  let reward = 0;
+  if (state.isSecretBoss) {
+      reward = 1000000; // 1 Million coins for killing boss
+      spawnDmgNumber(dom.enemyVis, `👑 BOSS DEFEATED!`, '#facc15');
+      setTimeout(() => spawnDmgNumber(dom.enemyVis, `+${reward.toLocaleString()} 🪙`, '#4ade80'), 600);
+  } else {
+      const baseReward = 15;
+      const power = ((state.stage - 1) * 5) + (state.wave - 1);
+      reward = Math.floor(baseReward * Math.pow(1.25, power));
+      addCoins(reward);
+      spawnDmgNumber(dom.enemyVis, `+${reward} 🪙`, '#4ade80');
+  }
   
   setTimeout(() => {
+    if (state.isSecretBoss) {
+        state.isSecretBoss = false;
+        addCoins(reward); // Give reward
+        showOverlay("LEGENDARY VICTORY", "The Secret Boss has fallen.");
+        // We stay on current stage/wave
+        setupWaveStats();
+        return;
+    }
+
     state.wave++;
     if(state.wave > 5) {
       state.wave = 1;
@@ -737,7 +826,7 @@ function winWave() {
     } else {
        showOverlay("VICTORY", "Wave Cleared! Prepare for next.");
     }
-  }, 1200);
+  }, 1600);
 }
 
 function loseWave() {
@@ -749,6 +838,13 @@ function loseWave() {
   updateBattleUI(); 
   
   setTimeout(() => {
+    if (state.isSecretBoss) {
+        state.isSecretBoss = false;
+        showOverlay("CRUSHED", "The Secret Boss was too strong.");
+        setupWaveStats(); // Return to normal
+        return;
+    }
+
     // Farm Mode Logic
     let pushedBack = false;
     
@@ -807,7 +903,9 @@ function buyOrb(level) {
 }
 
 function handleCellClick(index) {
-  if (state.inBattle) return; 
+  if (state.inBattle && !state.isSecretBoss) return; // Prevent merging during normal battle
+  // Allow merging during secret boss? No, let's keep it consistent.
+  if (state.inBattle) return;
   
   AudioSys.init();
   const val = state.grid[index];
@@ -828,14 +926,21 @@ function handleCellClick(index) {
     const targetVal = state.grid[state.selectedIdx];
     
     if(targetVal === val) {
-      const newLvl = Math.min(val + 1, 8);
+      const newLvl = Math.min(val + 1, 9); // Allow up to 9
       state.grid[index] = newLvl;
       state.grid[state.selectedIdx] = 0;
       state.selectedIdx = null;
+      
       AudioSys.merge();
       recalcPlayerStats();
       renderGrid();
       updateUI();
+      
+      // BOSS TRIGGER
+      if(newLvl === 9) {
+          triggerSecretBoss();
+      }
+      
     } else {
       state.selectedIdx = index;
       renderGrid();
@@ -869,8 +974,10 @@ function recalcPlayerStats() {
 
 // ===== RENDER & UI =====
 function updateBattleUI() {
-  dom.stage.textContent = state.stage;
-  dom.wave.textContent = state.wave;
+  if(!state.isSecretBoss) {
+     dom.stage.textContent = state.stage;
+     dom.wave.textContent = state.wave;
+  }
   
   // Auto Button
   if(state.autoUnlocked) {
