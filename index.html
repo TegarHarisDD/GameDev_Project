@@ -527,6 +527,7 @@ const ENEMIES = ["👾", "👹", "💀", "👻", "👽", "🤖", "🦇", "🐲"]
 
 let state = {
   coins: 10, 
+  // Initialize with Empty Grid
   grid: Array(16).fill(0),
   selectedIdx: null,
   purchases: { 1: 0, 2: 0, 3: 0 },
@@ -648,15 +649,19 @@ function triggerSecretBoss() {
   AudioSys.init();
   AudioSys.bossTrigger();
   
-  // BOSS STATS (Designed to be beatable by Lv9 but scary)
-  // Lv9 Unit: 250k DMG / 600k HP
-  // Boss needs to die in ~20 hits (20s) -> 5,000,000 HP
-  // Boss needs to deal significant damage -> 20,000 DMG (30 hits to kill player)
-  // Player wins with ~10s margin.
+  // BOSS STATS CALCULATION
+  // Requirement: Needs 1x Lv9 + 2x Lv8 to survive long enough.
+  // Lv9: 250k DPS, 600k HP.
+  // Lv8: 50k DPS, 100k HP.
   
-  state.enemyMaxHP = 5000000;
+  // With 1x Lv9 + 2x Lv8: ~350k DPS, 800k HP.
+  // With just Lv9: 250k DPS, 600k HP.
+  
+  // Tuned so that 1x Lv9 + 2x Lv8 wins with ~2 seconds spare.
+  // Tuned so that 1x Lv9 + 1x Lv8 loses.
+  state.enemyMaxHP = 10500000; // 10.5 Million HP
   state.enemyCurHP = state.enemyMaxHP;
-  state.enemyDPS = 20000;
+  state.enemyDPS = 25000;      // 25k DPS
   
   // Heal Player for the fight
   recalcPlayerStats();
@@ -802,10 +807,7 @@ function winWave() {
   setTimeout(() => {
     if (state.isSecretBoss) {
         state.isSecretBoss = false;
-        addCoins(reward); // Give reward
-        showOverlay("LEGENDARY VICTORY", "The Secret Boss has fallen.");
-        // We stay on current stage/wave
-        setupWaveStats();
+        triggerGameEnd();
         return;
     }
 
@@ -827,6 +829,18 @@ function winWave() {
        showOverlay("VICTORY", "Wave Cleared! Prepare for next.");
     }
   }, 1600);
+}
+
+function triggerGameEnd() {
+    dom.ovTitle.textContent = "THE END";
+    dom.ovTitle.style.color = "#facc15";
+    dom.ovSub.innerHTML = "You have defeated the Secret Boss.<br>The Simulation is complete.";
+    
+    const btn = dom.overlay.querySelector('.btn-start');
+    btn.textContent = "🔄 Reset Simulation";
+    btn.onclick = () => location.reload();
+    
+    dom.overlay.style.display = 'flex';
 }
 
 function loseWave() {
